@@ -5,11 +5,11 @@
   </PropertyGroup>
   <PropertyGroup>
     <DotNetExtensionsVersion>8.0.0</DotNetExtensionsVersion>
-    <RoslynVersion>4.9.0-3.final</RoslynVersion>
+    <RoslynVersion>4.9.2</RoslynVersion>
     <RoslynPrivateVersion>4.9.0-3.24054.13</RoslynPrivateVersion>
-    <AvaloniaVersion>11.0.7</AvaloniaVersion>
+    <AvaloniaVersion>11.0.10</AvaloniaVersion>
     <RxVersion>6.0.0</RxVersion>
-    <NuGetVersion>6.8.0</NuGetVersion>
+    <NuGetVersion>6.9.1</NuGetVersion>
   </PropertyGroup>
   <ItemGroup>
     <PackageVersion Include="AvalonEdit" Version="6.3.0.90" />
@@ -33,7 +33,7 @@
     <PackageVersion Include="Microsoft.Extensions.Logging.Debug" Version="$(DotNetExtensionsVersion)" />
     <PackageVersion Include="Microsoft.Extensions.Logging" Version="$(DotNetExtensionsVersion)" />
     <PackageVersion Include="Microsoft.Maui.Resizetizer" Version="8.0.6" />
-    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.9.0" />
     <PackageVersion Include="Microsoft.VisualStudio.Validation" Version="17.8.8" />
     <PackageVersion Include="MSBuild.StructuredLogger" Version="2.2.206" />
     <PackageVersion Include="Mono.Cecil" Version="0.11.5" />
@@ -47,8 +47,8 @@
     <PackageVersion Include="System.Reflection.MetadataLoadContext" Version="$(DotNetExtensionsVersion)" />
     <PackageVersion Include="System.Reflection.Metadata" Version="$(DotNetExtensionsVersion)" />
     <PackageVersion Include="System.Composition" Version="$(DotNetExtensionsVersion)" />
-    <PackageVersion Include="xunit.runner.visualstudio" Version="2.5.6" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="2.5.7" />
     <PackageVersion Include="Xunit.StaFact" Version="1.1.11" />
-    <PackageVersion Include="xunit" Version="2.6.6" />
+    <PackageVersion Include="xunit" Version="2.7.0" />
   </ItemGroup>
 </Project>
