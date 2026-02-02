@@ -30,3 +30,10 @@ jobs:
         name: logs
         path: |
           **/*.binlog
+    - name: Publish application
+      run: dotnet publish -c Release -o ./publish_output --no-restore
+    - name: Upload build artifact (publish output)
+      uses: actions/upload-artifact@v4
+      with:
+        name: app-publish
+        path: ./publish_output
