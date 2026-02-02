@@ -17,6 +17,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Mono.Cecil;
+using RoslynPad.Roslyn.FileBasedPrograms;
 using Nerdbank.Streams;
 using NuGet.Versioning;
 using RoslynPad.Build.ILDecompiler;
@@ -73,6 +74,8 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
     private string _name;
     private bool _running;
     private bool _initializeBuildPathAfterRun;
+    private bool _hasFileBasedDirectives;
+    private bool _hasLegacyPackageDirectives;
     private TextWriter? _processInputStream;
     private string? _dotNetExecutable;
 
@@ -89,6 +92,31 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
     private bool IsScript => _parameters.SourceCodeKind == SourceCodeKind.Script;
 
     public bool UseCache => Platform.FrameworkVersion?.Major >= 6;
+
+    /// <summary>
+    /// Returns true if the current platform supports .NET file-based apps (dotnet run file.cs)
+    /// and the code contains file-based directives (#:package or #:sdk).
+    /// </summary>
+    private bool UseFileBasedExecution
+    {
+        get
+        {
+            if (!Platform.SupportsFileBasedApps)
+            {
+                return false;
+            }
+
+            lock (_libraries)
+            {
+                // Check if any file-based package references exist (parsed from #:package)
+                // We detect this by checking if we have package references but no #r nuget: directives
+                // Actually, we need to track this separately since both parse to PackageReference
+                return _hasFileBasedDirectives;
+            }
+        }
+    }
+
+    public bool UseFileBasedReferences => Platform.SupportsFileBasedApps && !_hasLegacyPackageDirectives;
 
     public bool HasPlatform => _platform != null;
 
@@ -206,7 +234,7 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
             return;
         }
 
-        _logger.LogInformation("Start ExecuteAsync");
+        _logger.StartExecuteAsync();
 
         await new NoContextYieldAwaitable();
 
@@ -220,24 +248,33 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
         try
         {
             _running = true;
-            var binPath = IsScript ? BuildPath : Path.Combine(BuildPath, "bin");
-            _assemblyPath = Path.Combine(binPath, $"{Name}.{ExecutableExtension}");
 
-            var success = IsScript
-                ? CompileInProcess(path, optimizationLevel, _assemblyPath, cancellationToken)
-                : await CompileWithMsbuild(path, optimizationLevel, cancellationToken).ConfigureAwait(false);
-
-            if (!success)
+            if (UseFileBasedExecution)
             {
-                return;
+                await ExecuteFileBasedAsync(path, optimizationLevel, cancellationToken).ConfigureAwait(false);
             }
-
-            if (disassemble)
+            else
             {
-                Disassemble();
-            }
+                // Traditional execution: compile first, then run
+                var binPath = IsScript ? BuildPath : Path.Combine(BuildPath, "bin");
+                _assemblyPath = Path.Combine(binPath, $"{Name}.{ExecutableExtension}");
 
-            await ExecuteAssemblyAsync(_assemblyPath, cancellationToken).ConfigureAwait(false);
+                var success = IsScript
+                    ? CompileInProcess(path, optimizationLevel, _assemblyPath, cancellationToken)
+                    : await CompileWithMsbuild(path, optimizationLevel, cancellationToken).ConfigureAwait(false);
+
+                if (!success)
+                {
+                    return;
+                }
+
+                if (disassemble)
+                {
+                    Disassemble();
+                }
+
+                await ExecuteAssemblyAsync(_assemblyPath, cancellationToken).ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -269,36 +306,188 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
             await File.WriteAllTextAsync(targetPath, finalCode, cancellationToken).ConfigureAwait(false);
         }
 
-        var csprojPath = Path.Combine(BuildPath, "program.csproj");
+        var csprojPath = Path.Combine(BuildPath, UseCache ? "program.csproj" : $"{Name}.csproj");
         if (Platform.IsDotNetFramework || Platform.FrameworkVersion?.Major < 5)
         {
-            var moduleInitAttributeFile = Path.Combine(BuildPath, BuildCode.ModuleInitAttributeName + ".cs");
+            var moduleInitAttributeFile = Path.Combine(BuildPath, BuildCode.ModuleInitAttributeFileName);
             if (!File.Exists(moduleInitAttributeFile))
             {
                 await File.WriteAllTextAsync(moduleInitAttributeFile, BuildCode.ModuleInitAttribute, cancellationToken).ConfigureAwait(false);
             }
         }
 
-        var moduleInitFile = Path.Combine(BuildPath, BuildCode.ModuleInitName + ".cs");
+        var moduleInitFile = Path.Combine(BuildPath, BuildCode.ModuleInitFileName);
         if (!File.Exists(moduleInitFile))
         {
             await File.WriteAllTextAsync(moduleInitFile, BuildCode.ModuleInit, cancellationToken).ConfigureAwait(false);
         }
 
+        var buildWarningsPath = Path.Combine(BuildPath, "build-warnings.log");
+        var buildErrorsPath = Path.Combine(BuildPath, "build-errors.log");
+
         var buildArgs =
-            $"-nologo -v:q -p:Configuration={optimizationLevel} -p:AssemblyName={Name} " +
-            $"-bl:ProjectImports=None \"{csprojPath}\" ";
+            $"-nologo -v:q -p:Configuration={optimizationLevel} \"-p:AssemblyName={Name}\" " +
+            $"\"-flp1:logfile={buildWarningsPath};warningsonly;Encoding=UTF-8\" \"-flp2:logfile={buildErrorsPath};errorsonly;Encoding=UTF-8\" \"{csprojPath}\" ";
         using var buildResult = await ProcessUtil.RunProcessAsync(DotNetExecutable, BuildPath,
             $"build {buildArgs}", cancellationToken).ConfigureAwait(false);
         await buildResult.WaitForExitAsync().ConfigureAwait(false);
 
-        var binaryLogPath = Path.Combine(BuildPath, "msbuild.binlog");
-        var reader = Microsoft.Build.Logging.StructuredLogger.BinaryLog.ReadBuild(binaryLogPath);
-        var diagnostics = reader.FindChildrenRecursive<Microsoft.Build.Logging.StructuredLogger.AbstractDiagnostic>();
-        CompilationErrors?.Invoke(diagnostics.Where(d => !_parameters.DisabledDiagnostics.Contains(d.Code))
-                .Select(GetCompilationErrorResultObject).ToImmutableArray());
+        var compilationErrors = await ReadBuildLogAsync(buildWarningsPath, "Warning")
+            .Concat(ReadBuildLogAsync(buildErrorsPath, "Error"))
+            .ToArrayAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        return buildResult.ExitCode == 0;
+        var success = buildResult.ExitCode == 0;
+        if (!success && compilationErrors.Length == 0)
+        {
+            compilationErrors = [new CompilationErrorResultObject { Severity = "Error", Message = "Build failed: " + buildResult.StandardError }];
+        }
+
+        CompilationErrors?.Invoke(compilationErrors);
+
+        return success;
+    }
+
+    /// <summary>
+    /// Executes code using .NET 10+ file-based apps (dotnet run file.cs).
+    /// This is used when the platform supports file-based apps and the code contains #:package or #:sdk directives.
+    /// </summary>
+    private async Task ExecuteFileBasedAsync(string path, OptimizationLevel? optimizationLevel, CancellationToken cancellationToken)
+    {
+        // Delete any .csproj files - they prevent dotnet run file.cs from working
+        foreach (var csprojFile in IOUtilities.EnumerateFiles(BuildPath, "*.csproj"))
+        {
+            IOUtilities.PerformIO(() => File.Delete(csprojFile));
+        }
+
+        // Transform the code (add .Dump() to last expression, etc.)
+        var targetPath = Path.Combine(BuildPath, "Program.cs");
+        var code = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+        var syntaxTree = ParseAndTransformCode(code, path, (CSharpParseOptions)_roslynHost.ParseOptions, cancellationToken: cancellationToken);
+        
+        // Remove #:framework directives (replace with newlines to preserve line numbers)
+        syntaxTree = RemoveFileBasedFrameworkDirectives(syntaxTree);
+        var finalCode = syntaxTree.ToString();
+        
+        if (!File.Exists(targetPath) || !string.Equals(await File.ReadAllTextAsync(targetPath, cancellationToken).ConfigureAwait(false), finalCode, StringComparison.Ordinal))
+        {
+            await File.WriteAllTextAsync(targetPath, finalCode, cancellationToken).ConfigureAwait(false);
+        }
+
+        var moduleInitFile = Path.Combine(BuildPath, BuildCode.ModuleInitFileName);
+        if (!File.Exists(moduleInitFile))
+        {
+            await File.WriteAllTextAsync(moduleInitFile, BuildCode.ModuleInit, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Get framework references from parsed libraries
+        IEnumerable<LibraryRef> frameworkReferences;
+        lock (_libraries)
+        {
+            frameworkReferences = _libraries.Where(r => r.Kind == LibraryRef.RefKind.FrameworkReference).ToList();
+        }
+
+        // Generate Directory.Build.props to include RoslynPad.Runtime reference, implicit usings, framework references, and module init
+        var directoryBuildPropsPath = Path.Combine(BuildPath, "Directory.Build.props");
+        var runtimeAssemblyPath = _runtimeAssemblyLibraryRef.Value;
+        var directoryBuildProps = MSBuildHelper.CreateDirectoryBuildProps(runtimeAssemblyPath, _parameters.Imports, frameworkReferences, [BuildCode.ModuleInitFileName]);
+        await Task.Run(() => directoryBuildProps.Save(directoryBuildPropsPath), cancellationToken).ConfigureAwait(false);
+
+        // Generate global.json to pin SDK version
+        var globalJsonPath = Path.Combine(BuildPath, "global.json");
+        var globalJson = $@"{{ ""sdk"": {{ ""version"": ""{Platform.FrameworkVersion}"" }} }}";
+        await File.WriteAllTextAsync(globalJsonPath, globalJson, cancellationToken).ConfigureAwait(false);
+
+        // Copy nuget.config
+        var nugetConfigPath = Path.Combine(BuildPath, "nuget.config");
+        if (!File.Exists(nugetConfigPath))
+        {
+            File.Copy(_parameters.NuGetConfigPath, nugetConfigPath, overwrite: true);
+        }
+
+        // Build configuration
+        var configuration = optimizationLevel == OptimizationLevel.Release ? "Release" : "Debug";
+
+        // Run using dotnet run - this combines compilation and execution
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = DotNetExecutable,
+                Arguments = $"run --configuration {configuration} \"{targetPath}\" -- --pid {Environment.ProcessId}",
+                WorkingDirectory = BuildPath,
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                RedirectStandardInput = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
+            }
+        };
+
+        using var _ = cancellationToken.Register(() =>
+        {
+            try
+            {
+                _processInputStream = null;
+                process.Kill();
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorKillingProcess(ex);
+            }
+        });
+
+        _logger.StartingProcess(process.StartInfo.FileName, process.StartInfo.Arguments);
+        if (!process.Start())
+        {
+            _logger.ProcessStartReturnedFalse();
+            return;
+        }
+
+        _processInputStream = new StreamWriter(process.StandardInput.BaseStream, Encoding.UTF8);
+
+        await Task.WhenAll(
+            Task.Run(() => ReadObjectProcessStreamWithBuildOutputAsync(process.StandardOutput), cancellationToken),
+            Task.Run(() => ReadProcessStreamAsync(process.StandardError), cancellationToken)).ConfigureAwait(false);
+    }
+
+    private async IAsyncEnumerable<CompilationErrorResultObject> ReadBuildLogAsync(string path, string severity)
+    {
+        if (!File.Exists(path))
+        {
+            yield break;
+        }
+
+        await foreach (var line in File.ReadLinesAsync(path).ConfigureAwait(false))
+        {
+            var match = MsbuildLogRegex().Match(line);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            var code = match.Groups["code"].Value;
+            if (_parameters.DisabledDiagnostics.Contains(code))
+            {
+                continue;
+            }
+
+            var error = new CompilationErrorResultObject
+            {
+                Severity = severity,
+                ErrorCode = code,
+                Message = match.Groups["message"].Value,
+            };
+
+            if (match.Groups["file"].Value.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
+            {
+                error.LineNumber = int.Parse(match.Groups["line"].ValueSpan, CultureInfo.InvariantCulture);
+                error.Column = int.Parse(match.Groups["column"].ValueSpan, CultureInfo.InvariantCulture);
+            }
+
+            yield return error;
+        }
     }
 
     private bool CompileInProcess(string path, OptimizationLevel? optimizationLevel, string assemblyPath, CancellationToken cancellationToken)
@@ -308,7 +497,7 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
 
         var diagnostics = script.CompileAndSaveAssembly(assemblyPath, cancellationToken);
         var hasErrors = diagnostics.Any(d => d.Severity == DiagnosticSeverity.Error);
-        _logger.LogInformation("Assembly saved at {AssemblyPath}, has errors = {HasErrors}", _assemblyPath, hasErrors);
+        _logger.AssemblySaved(_assemblyPath, hasErrors);
 
         SendDiagnostics(diagnostics);
         return !hasErrors;
@@ -316,11 +505,11 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
 
     private void NoDotNetError()
     {
-        CompilationErrors?.Invoke(new[]
-        {
+        CompilationErrors?.Invoke(
+        [
             CompilationErrorResultObject.Create("Error", errorCode: "",
                 message: "The .NET SDK is required to use RoslynPad. https://aka.ms/dotnet/download", line: 0, column: 0)
-        });
+        ]);
     }
 
     private void Disassemble()
@@ -340,14 +529,16 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
 
         var optimization = optimizationLevel ?? OptimizationLevel.Release;
 
-        _logger.LogInformation("Creating script runner, platform = {Platform}, " +
-            "references = {References}, imports = {Imports}, directory = {Directory}, " +
-            "optimization = {Optimization}",
-            platform,
-            MetadataReferences.Select(t => t.Display),
-            _imports,
-            _parameters.WorkingDirectory,
-            optimizationLevel);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            var referenceDisplays = MetadataReferences.Select(static reference => reference.Display).ToArray();
+            _logger.CreatingScriptRunner(
+                platform,
+                referenceDisplays,
+                _imports,
+                _parameters.WorkingDirectory,
+                optimizationLevel);
+        }
 
         var parseOptions = ((CSharpParseOptions)_roslynHost.ParseOptions).WithKind(_parameters.SourceCodeKind);
 
@@ -390,14 +581,14 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Error killing process");
+                _logger.ErrorKillingProcess(ex);
             }
         });
 
-        _logger.LogInformation("Starting process {Executable}, arguments = {Arguments}", process.StartInfo.FileName, process.StartInfo.Arguments);
+        _logger.StartingProcess(process.StartInfo.FileName, process.StartInfo.Arguments);
         if (!process.Start())
         {
-            _logger.LogWarning("Process.Start returned false");
+            _logger.ProcessStartReturnedFalse();
             return;
         }
 
@@ -434,13 +625,9 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
 
     private async Task ReadProcessStreamAsync(StreamReader reader)
     {
-        while (!reader.EndOfStream)
+        while (await reader.ReadLineAsync().ConfigureAwait(false) is { } line)
         {
-            var line = await reader.ReadLineAsync().ConfigureAwait(false);
-            if (line != null)
-            {
-                Dumped?.Invoke(new ResultObject { Value = line });
-            }
+            Dumped?.Invoke(new ResultObject { Value = line });
         }
     }
 
@@ -521,6 +708,32 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
         }
     }
 
+    /// <summary>
+    /// Reads process output that may contain build output before the JSON protocol begins.
+    /// Used for file-based execution where dotnet run outputs build messages before the program starts.
+    /// Reads plain text lines until it sees the ready marker, then switches to JSON protocol.
+    /// </summary>
+    private async Task ReadObjectProcessStreamWithBuildOutputAsync(StreamReader reader)
+    {
+        const string readyMarker = "#roslynpad#";
+
+        // Phase 1: Read build output as plain text until we see the ready marker
+        while (await reader.ReadLineAsync().ConfigureAwait(false) is { } line)
+        {
+            if (line == readyMarker)
+            {
+                // Marker found - switch to JSON protocol
+                break;
+            }
+
+            // This is build output - display it as a result
+            Dumped?.Invoke(new ResultObject { Value = line });
+        }
+
+        // Phase 2: Read JSON protocol output (same as ReadObjectProcessStreamAsync)
+        await ReadObjectProcessStreamAsync(reader).ConfigureAwait(false);
+    }
+
     private static SyntaxTree ParseAndTransformCode(string code, string path, CSharpParseOptions parseOptions, CancellationToken cancellationToken)
     {
         var tree = SyntaxFactory.ParseSyntaxTree(code, parseOptions, path, cancellationToken: cancellationToken);
@@ -556,22 +769,40 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
         return tree.WithRootAndOptions(root, parseOptions);
     }
 
+    /// <summary>
+    /// Removes #:framework directive trivia from a syntax tree, replacing them with newlines to preserve line numbers.
+    /// This is needed because dotnet run doesn't recognize #:framework, so we handle it via Directory.Build.props.
+    /// </summary>
+    private static SyntaxTree RemoveFileBasedFrameworkDirectives(SyntaxTree syntaxTree)
+    {
+        var directives = syntaxTree.FindFileLevelDirectives();
+        var frameworkTriviaToRemove = directives
+            .Where(d => d.DirectiveKind == "framework")
+            .Select(d => d.Trivia)
+            .ToHashSet();
+
+        if (frameworkTriviaToRemove.Count == 0)
+        {
+            return syntaxTree;
+        }
+
+        var root = syntaxTree.GetRoot();
+
+        // Replace framework directive trivia with end-of-line trivia to preserve line numbers
+        var newRoot = root.ReplaceTrivia(
+            frameworkTriviaToRemove,
+            (original, _) => SyntaxFactory.EndOfLine("\n"));
+
+        return syntaxTree.WithRootAndOptions(newRoot, syntaxTree.Options);
+    }
+
     private void SendDiagnostics(ImmutableArray<Diagnostic> diagnostics)
     {
         if (diagnostics.Length > 0)
         {
-            CompilationErrors?.Invoke(diagnostics.Where(d => !_parameters.DisabledDiagnostics.Contains(d.Id))
-                .Select(GetCompilationErrorResultObject).ToImmutableArray());
+            CompilationErrors?.Invoke([.. diagnostics.Where(d => !_parameters.DisabledDiagnostics.Contains(d.Id)).Select(GetCompilationErrorResultObject)]);
         }
     }
-
-    private static CompilationErrorResultObject GetCompilationErrorResultObject(Microsoft.Build.Logging.StructuredLogger.AbstractDiagnostic diagnostic) =>
-        CompilationErrorResultObject.Create(
-            diagnostic.TypeName,
-            diagnostic.Code,
-            diagnostic.Text,
-            diagnostic.LineNumber,
-            diagnostic.ColumnNumber);
 
     private static CompilationErrorResultObject GetCompilationErrorResultObject(Diagnostic diagnostic)
     {
@@ -599,8 +830,9 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
             return;
         }
 
-        var libraries = ParseReferences(syntaxRoot).Append(Platform.IsDotNet ? _runtimeAssemblyLibraryRef : _runtimeNetFxAssemblyLibraryRef);
-        if (UpdateLibraries(libraries))
+        var (libraries, hasFileBasedDirectives, hasLegacyPackageDirectives) = ParseReferences(syntaxRoot);
+        var allLibraries = libraries.Append(Platform.IsDotNet ? _runtimeAssemblyLibraryRef : _runtimeNetFxAssemblyLibraryRef);
+        if (UpdateLibraries(allLibraries, hasFileBasedDirectives, hasLegacyPackageDirectives))
         {
             await RestoreAsync().ConfigureAwait(false);
         }
@@ -616,14 +848,20 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
             return document != null ? await document.GetSyntaxRootAsync().ConfigureAwait(false) : null;
         }
 
-        bool UpdateLibraries(IEnumerable<LibraryRef> libraries)
+        bool UpdateLibraries(IEnumerable<LibraryRef> libraries, bool hasFileBased, bool hasLegacyPackage)
         {
             lock (_libraries)
             {
-                if (!_libraries.SetEquals(libraries))
+                var librariesChanged = !_libraries.SetEquals(libraries);
+                var fileBasedChanged = _hasFileBasedDirectives != hasFileBased;
+                var legacyChanged = _hasLegacyPackageDirectives != hasLegacyPackage;
+                
+                if (librariesChanged || fileBasedChanged || legacyChanged)
                 {
                     _libraries.Clear();
                     _libraries.UnionWith(libraries);
+                    _hasFileBasedDirectives = hasFileBased;
+                    _hasLegacyPackageDirectives = hasLegacyPackage;
                     return true;
                 }
                 else if (alwaysRestore)
@@ -635,18 +873,47 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
             return false;
         }
 
-        static List<LibraryRef> ParseReferences(SyntaxNode syntaxRoot)
+        static (List<LibraryRef> libraries, bool hasFileBasedDirectives, bool hasLegacyPackageDirectives) ParseReferences(SyntaxNode syntaxRoot)
         {
             const string LegacyNuGetPrefix = "$NuGet\\";
             const string FxPrefix = "framework:";
 
             var libraries = new List<LibraryRef>();
+            var hasFileBasedDirectives = false;
+            var hasLegacyPackageDirectives = false;
 
             if (syntaxRoot is not CompilationUnitSyntax compilation)
             {
-                return libraries;
+                return (libraries, hasFileBasedDirectives, hasLegacyPackageDirectives);
             }
 
+            // Parse file-level directives (#:package, #:framework) using syntax tree
+            foreach (var directive in syntaxRoot.SyntaxTree.FindFileLevelDirectives())
+            {
+                switch (directive.DirectiveKind)
+                {
+                    case "package":
+                        var (id, version) = ReferenceDirectiveHelper.ParseFileBasedPackageDirective(directive.DirectiveText);
+                        if (!string.IsNullOrEmpty(id))
+                        {
+                            libraries.Add(LibraryRef.PackageReference(id, version ?? string.Empty));
+                            hasFileBasedDirectives = true;
+                        }
+                        break;
+                    case "framework":
+                        if (!string.IsNullOrEmpty(directive.DirectiveText))
+                        {
+                            libraries.Add(LibraryRef.FrameworkReference(directive.DirectiveText));
+                            hasFileBasedDirectives = true;
+                        }
+                        break;
+                    case "sdk":
+                        hasFileBasedDirectives = true;
+                        break;
+                }
+            }
+
+            // Parse traditional #r directives
             foreach (var directive in compilation.GetReferenceDirectives())
             {
                 var value = directive.File.ValueText;
@@ -662,10 +929,12 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
                 if (HasPrefix(ReferenceDirectiveHelper.NuGetPrefix, value))
                 {
                     (id, version) = ReferenceDirectiveHelper.ParseNuGetReference(value);
+                    hasLegacyPackageDirectives = true;
                 }
                 else if (HasPrefix(LegacyNuGetPrefix, value))
                 {
                     (id, version) = ParseLegacyNuGetReference(value);
+                    hasLegacyPackageDirectives = true;
                     if (id == null)
                     {
                         continue;
@@ -686,7 +955,7 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
                 libraries.Add(LibraryRef.PackageReference(id, version ?? string.Empty));
             }
 
-            return libraries;
+            return (libraries, hasFileBasedDirectives, hasLegacyPackageDirectives);
 
             static bool HasPrefix(string prefix, string value) =>
                 value.Length > prefix.Length &&
@@ -735,7 +1004,7 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Error in previous restore task");
+                    _logger.ErrorInPreviousRestoreTask(ex);
                 }
 
                 var projBuildResult = await BuildCsproj().ConfigureAwait(false);
@@ -748,14 +1017,14 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
                     await BuildGlobalJson(projBuildResult.RestorePath).ConfigureAwait(false);
                     File.Copy(_parameters.NuGetConfigPath, Path.Combine(projBuildResult.RestorePath, "nuget.config"), overwrite: true);
 
-                    var errorsPath = Path.Combine(projBuildResult.RestorePath, "errors.log");
-                    File.Delete(errorsPath);
+                    var restoreErrorsPath = Path.Combine(projBuildResult.RestorePath, "restore-errors.log");
+                    File.Delete(restoreErrorsPath);
 
                     cancellationToken.ThrowIfCancellationRequested();
 
                     var buildArgs =
                         $"--interactive -nologo " +
-                        $"-flp:errorsonly;logfile=\"{errorsPath}\" \"{projBuildResult.CsprojPath}\" " +
+                        $"-flp:errorsonly;logfile=\"{restoreErrorsPath}\";Encoding=UTF-8 \"{projBuildResult.CsprojPath}\" " +
                         $"-getTargetResult:build -getItem:ReferencePathWithRefAssemblies,Analyzer ";
                     using var restoreResult = await ProcessUtil.RunProcessAsync(DotNetExecutable, BuildPath,
                         $"build {buildArgs}", cancellationToken).ConfigureAwait(false);
@@ -764,7 +1033,7 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
 
                     if (restoreResult.ExitCode != 0)
                     {
-                        var errors = await GetErrorsAsync(errorsPath, restoreResult, cancellationToken).ConfigureAwait(false);
+                        var errors = await GetRestoreErrorsAsync(restoreErrorsPath, restoreResult, cancellationToken).ConfigureAwait(false);
                         RestoreCompleted?.Invoke(RestoreResult.FromErrors(errors));
                         return;
                     }
@@ -812,7 +1081,7 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _logger.LogWarning(ex, "Restore error");
+                _logger.RestoreError(ex);
                 RestoreCompleted?.Invoke(RestoreResult.FromErrors([ex.ToString()]));
             }
             finally
@@ -830,17 +1099,15 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
                 return;
             }
 
-            MetadataReferences = output.Items.ReferencePathWithRefAssemblies
+            MetadataReferences = [.. output.Items.ReferencePathWithRefAssemblies
                 .Select(r => r.FullPath)
                 .Where(r => !string.IsNullOrWhiteSpace(r))
-                .Select(_roslynHost.CreateMetadataReference)
-                .ToImmutableArray();
+                .Select(_roslynHost.CreateMetadataReference)];
 
-            Analyzers = output.Items.Analyzer
+            Analyzers = [.. output.Items.Analyzer
                 .Select(r => r.FullPath)
                 .Where(r => !string.IsNullOrWhiteSpace(r))
-                .Select(r => new AnalyzerFileReference(r, _analyzerAssemblyLoader))
-                .ToImmutableArray();
+                .Select(r => new AnalyzerFileReference(r, _analyzerAssemblyLoader))];
         }
 
         async Task BuildGlobalJson(string restorePath)
@@ -892,7 +1159,7 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
             return new(_restorePath, csprojPath, markerPath, markerExists);
         }
 
-        static async Task<string[]> GetErrorsAsync(string errorsPath, ProcessUtil.ProcessResult result, CancellationToken cancellationToken)
+        static async Task<string[]> GetRestoreErrorsAsync(string errorsPath, ProcessUtil.ProcessResult result, CancellationToken cancellationToken)
         {
             string[] errors;
             try
@@ -906,7 +1173,7 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
                 {
                     for (var i = 0; i < errors.Length; i++)
                     {
-                        var match = ErrorMatcher().Match(errors[i]);
+                        var match = RestoreErrorRegex().Match(errors[i]);
                         if (match.Success)
                         {
                             errors[i] = match.Value;
@@ -923,7 +1190,7 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
         }
 
         static string[] GetErrorsFromResult(ProcessUtil.ProcessResult result) =>
-            new[] { result.StandardError ?? string.Empty };
+            [result.StandardError ?? string.Empty];
     }
 
     private CancellationTokenSource CancelAndCreateNew(ref CancellationTokenSource? cts, CancellationToken cancellationToken)
@@ -964,8 +1231,11 @@ internal partial class ExecutionHost : IExecutionHost, IDisposable
         public override void Write(Utf8JsonWriter writer, bool value, JsonSerializerOptions options) => throw new NotSupportedException();
     }
 
-    [GeneratedRegex("(?<=\\: error )[^\\]]+")]
-    private static partial Regex ErrorMatcher();
+    [GeneratedRegex(@"(?<=\: error )[^\]]+")]
+    private static partial Regex RestoreErrorRegex();
+
+    [GeneratedRegex(@"(?<file>[\\/][^\\/(]+)?\((?<line>\d+),(?<column>\d+)\): (warning|error) (?<code>\w+): ((?<message>.+)\s*\[.+\]|(?<message>.+))", RegexOptions.ExplicitCapture)]
+    private static partial Regex MsbuildLogRegex();
 
     private record BuildOutput(BuildOutputItems Items);
     private record BuildOutputItems(BuildOutputReferenceItem[] ReferencePathWithRefAssemblies, BuildOutputReferenceItem[] Analyzer);

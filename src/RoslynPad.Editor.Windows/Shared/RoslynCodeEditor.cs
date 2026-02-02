@@ -2,8 +2,10 @@
 using RoslynPad.Roslyn;
 using RoslynPad.Roslyn.BraceMatching;
 using RoslynPad.Roslyn.Diagnostics;
+using RoslynPad.Roslyn.Structure;
 using RoslynPad.Roslyn.QuickInfo;
 using Microsoft.CodeAnalysis.Formatting;
+using System.Reactive.Linq;
 
 namespace RoslynPad.Editor;
 
@@ -19,6 +21,8 @@ public class RoslynCodeEditor : CodeTextEditor
     private IBraceMatchingService? _braceMatchingService;
     private CancellationTokenSource? _braceMatchingCts;
     private RoslynHighlightingColorizer? _colorizer;
+    private IBlockStructureService? _blockStructureService;
+    private SnippetManager? _snippetManager;
 
     public RoslynCodeEditor()
     {
@@ -26,6 +30,27 @@ public class RoslynCodeEditor : CodeTextEditor
         TextArea.TextView.BackgroundRenderers.Add(_textMarkerService);
         TextArea.TextView.LineTransformers.Add(_textMarkerService);
         TextArea.Caret.PositionChanged += CaretOnPositionChanged;
+
+        Observable.FromEventPattern<EventHandler, EventArgs>(
+            h => TextArea.TextView.Document.TextChanged += h,
+            h => TextArea.TextView.Document.TextChanged -= h)
+            .Throttle(TimeSpan.FromSeconds(2))
+            .ObserveOn(SynchronizationContext.Current!)
+            .Subscribe(_ => RefreshFoldings().ConfigureAwait(true));
+    }
+
+    private async void OnTextChanged(object? sender, EventArgs e)
+    {
+        await RefreshFoldings().ConfigureAwait(true);
+    }
+
+    public FoldingManager? FoldingManager { get; private set; }
+
+
+    public bool IsCodeFoldingEnabled
+    {
+        get { return (bool)this.GetValue(IsCodeFoldingEnabledProperty); }
+        set { this.SetValue(IsCodeFoldingEnabledProperty, value); }
     }
 
     public bool IsBraceCompletionEnabled
@@ -33,6 +58,13 @@ public class RoslynCodeEditor : CodeTextEditor
         get { return (bool)this.GetValue(IsBraceCompletionEnabledProperty); }
         set { this.SetValue(IsBraceCompletionEnabledProperty, value); }
     }
+
+    public static readonly StyledProperty
+#if AVALONIA
+        <bool>
+#endif
+    IsCodeFoldingEnabledProperty =
+    CommonProperty.Register<RoslynCodeEditor, bool>(nameof(IsCodeFoldingEnabledProperty), defaultValue: true);
 
     public static readonly StyledProperty
 #if AVALONIA
@@ -61,6 +93,7 @@ public class RoslynCodeEditor : CodeTextEditor
         get => (ImageSource)this.GetValue(ContextActionsIconProperty);
         set => this.SetValue(ContextActionsIconProperty, value);
     }
+
     public IClassificationHighlightColors? ClassificationHighlightColors
     {
         get => _classificationHighlightColors;
@@ -93,6 +126,7 @@ public class RoslynCodeEditor : CodeTextEditor
     {
         _roslynHost = roslynHost ?? throw new ArgumentNullException(nameof(roslynHost));
         _classificationHighlightColors = highlightColors ?? throw new ArgumentNullException(nameof(highlightColors));
+        _snippetManager = new SnippetManager();
 
         _braceMatcherHighlighter = new BraceMatcherHighlightRenderer(TextArea.TextView, _classificationHighlightColors);
 
@@ -101,25 +135,27 @@ public class RoslynCodeEditor : CodeTextEditor
 
         var avalonEditTextContainer = new AvalonEditTextContainer(Document) { Editor = this };
 
-        var creatingDocumentArgs = new CreatingDocumentEventArgs(avalonEditTextContainer, ProcessDiagnostics);
+        var creatingDocumentArgs = new CreatingDocumentEventArgs(avalonEditTextContainer);
         OnCreatingDocument(creatingDocumentArgs);
 
         _documentId = creatingDocumentArgs.DocumentId ??
             roslynHost.AddDocument(new DocumentCreationArgs(avalonEditTextContainer, workingDirectory, sourceCodeKind,
-                ProcessDiagnostics, avalonEditTextContainer.UpdateText));
+                avalonEditTextContainer.UpdateText));
+
+        roslynHost.GetWorkspaceService<IDiagnosticsUpdater>(_documentId).DiagnosticsChanged += ProcessDiagnostics;
 
         if (roslynHost.GetDocument(_documentId) is { } document)
         {
             var options = await document.GetOptionsAsync().ConfigureAwait(true);
             Options.IndentationSize = options.GetOption(FormattingOptions.IndentationSize);
             Options.ConvertTabsToSpaces = !options.GetOption(FormattingOptions.UseTabs);
+
+            _blockStructureService = document.GetLanguageService<IBlockStructureService>();
         }
 
         AppendText(documentText);
         Document.UndoStack.ClearAll();
         AsyncToolTipRequest = OnAsyncToolTipRequest;
-
-        RefreshHighlighting();
 
         _contextActionsRenderer = new ContextActionsRenderer(this, _textMarkerService) { IconImage = ContextActionsIcon };
         _contextActionsRenderer.Providers.Add(new RoslynContextActionProvider(_documentId, _roslynHost));
@@ -128,6 +164,11 @@ public class RoslynCodeEditor : CodeTextEditor
         completionProvider.Warmup();
 
         CompletionProvider = completionProvider;
+
+        RefreshHighlighting();
+
+        InstallFoldingManager();
+        await RefreshFoldings().ConfigureAwait(true);
 
         return _documentId;
     }
@@ -172,7 +213,7 @@ public class RoslynCodeEditor : CodeTextEditor
 
         try
         {
-            var text = await document.GetTextAsync(token).ConfigureAwait(false);
+            var text = await document.GetTextAsync(token).ConfigureAwait(true);
             var caretOffset = CaretOffset;
             if (caretOffset <= text.Length)
             {
@@ -234,29 +275,25 @@ public class RoslynCodeEditor : CodeTextEditor
             return;
         }
 
-        var info = await _quickInfoProvider.GetItemAsync(document, arg.Position, CancellationToken.None).ConfigureAwait(true);
+        var info = await _quickInfoProvider.GetItemAsync(document, arg.Position).ConfigureAwait(true);
         if (info != null)
         {
             arg.SetToolTip(info.Create());
         }
     }
 
-    protected void ProcessDiagnostics(DiagnosticsUpdatedArgs args)
+    protected async void ProcessDiagnostics(DiagnosticsChangedArgs args)
     {
-        if (this.GetDispatcher().CheckAccess())
+        if (args.DocumentId != _documentId)
         {
-            ProcessDiagnosticsOnUiThread(args);
             return;
         }
 
-        this.GetDispatcher().InvokeAsync(() => ProcessDiagnosticsOnUiThread(args));
-    }
+        await this.GetDispatcher();
 
-    private void ProcessDiagnosticsOnUiThread(DiagnosticsUpdatedArgs args)
-    {
-        _textMarkerService.RemoveAll(marker => Equals(args.Id, marker.Tag));
+        _textMarkerService.RemoveAll(d => d.Tag is DiagnosticData diagnosticData && args.RemovedDiagnostics.Contains(diagnosticData));
 
-        if (_roslynHost == null || _documentId == null || args.Kind != DiagnosticsUpdatedKind.DiagnosticsCreated)
+        if (_roslynHost == null || _documentId == null)
         {
             return;
         }
@@ -267,7 +304,7 @@ public class RoslynCodeEditor : CodeTextEditor
             return;
         }
 
-        foreach (var diagnosticData in args.Diagnostics)
+        foreach (var diagnosticData in args.AddedDiagnostics)
         {
             if (diagnosticData.Severity == DiagnosticSeverity.Hidden || diagnosticData.IsSuppressed)
             {
@@ -283,7 +320,7 @@ public class RoslynCodeEditor : CodeTextEditor
             var marker = _textMarkerService.TryCreate(span.Value.Start, span.Value.Length);
             if (marker != null)
             {
-                marker.Tag = args.Id;
+                marker.Tag = diagnosticData;
                 marker.MarkerColor = GetDiagnosticsColor(diagnosticData);
                 marker.ToolTip = diagnosticData.Message;
             }
@@ -315,20 +352,176 @@ public class RoslynCodeEditor : CodeTextEditor
             }
         }
     }
-}
 
-public class CreatingDocumentEventArgs : RoutedEventArgs
-{
-    public CreatingDocumentEventArgs(AvalonEditTextContainer textContainer, Action<DiagnosticsUpdatedArgs> processDiagnostics)
+    protected override async Task<bool> TryExpandSnippetAsync()
     {
-        TextContainer = textContainer;
-        ProcessDiagnostics = processDiagnostics;
-        RoutedEvent = RoslynCodeEditor.CreatingDocumentEvent;
+        if (_snippetManager == null)
+        {
+            return false;
+        }
+
+        // Get the word before the caret
+        var offset = CaretOffset;
+        if (offset == 0)
+        {
+            return false;
+        }
+
+        var document = Document;
+        var line = document.GetLineByOffset(offset);
+        var lineText = document.GetText(line.Offset, offset - line.Offset);
+        
+        // Extract snippet text from the line
+        var result = SnippetExpandHelper.ExtractSnippetTextFromLine(lineText, lineText.Length);
+        if (result == null)
+        {
+            return false; // No word found
+        }
+
+        var (wordStart, _) = result.Value;
+        var snippetStartOffset = line.Offset + wordStart;
+        var snippetLength = offset - snippetStartOffset;
+        
+        // Get the Roslyn document if available
+        Document? roslynDocument = null;
+        if (_roslynHost != null && _documentId != null)
+        {
+            roslynDocument = _roslynHost.GetDocument(_documentId);
+        }
+        
+        // Expand the snippet (extraction, class name resolution happens internally)
+        return await SnippetExpandHelper.ExpandSnippetAsync(
+            _snippetManager,
+            TextArea,
+            snippetStartOffset,
+            snippetLength,
+            roslynDocument).ConfigureAwait(false);
     }
 
-    public AvalonEditTextContainer TextContainer { get; }
+    public async Task RefreshFoldings()
+    {
+        if (FoldingManager == null || !IsCodeFoldingEnabled)
+        {
+            return;
+        }
 
-    public Action<DiagnosticsUpdatedArgs> ProcessDiagnostics { get; }
+        if (_documentId == null || _roslynHost == null || _blockStructureService == null)
+        {
+            return;
+        }
 
-    public DocumentId? DocumentId { get; set; }
+        var document = _roslynHost.GetDocument(_documentId);
+        if (document == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var elements = await _blockStructureService.GetBlockStructureAsync(document).ConfigureAwait(true);
+
+            var foldings = elements.Spans
+                .Select(s => new NewFolding { Name = s.BannerText, StartOffset = s.TextSpan.Start, EndOffset = s.TextSpan.End })
+                .OrderBy(item => item.StartOffset);
+
+            FoldingManager?.UpdateFoldings(foldings, firstErrorOffset: 0);
+        }
+        catch
+        {
+        }
+    }
+
+    private void InstallFoldingManager()
+    {
+        if (!IsCodeFoldingEnabled)
+        {
+            return;
+        }
+
+        FoldingManager = FoldingManager.Install(TextArea);
+    }
+
+    public void FoldAllFoldings()
+    {
+        if (FoldingManager == null || !IsCodeFoldingEnabled)
+        {
+            return;
+        }
+
+        foreach (var foldingSection in FoldingManager.AllFoldings)
+        {
+            foldingSection.IsFolded = true;
+        }
+    }
+
+    public void UnfoldAllFoldings()
+    {
+        if (FoldingManager == null || !IsCodeFoldingEnabled)
+        {
+            return;
+        }
+
+        foreach (var foldingSection in FoldingManager.AllFoldings)
+            foldingSection.IsFolded = false;
+    }
+
+    public void ToggleAllFoldings()
+    {
+        if (FoldingManager == null || !IsCodeFoldingEnabled)
+        {
+            return;
+        }
+
+        var fold = FoldingManager.AllFoldings.All(folding => !folding.IsFolded);
+
+        foreach (var foldingSection in FoldingManager.AllFoldings)
+            foldingSection.IsFolded = fold;
+    }
+
+    public void ToggleCurrentFolding()
+    {
+        if (FoldingManager == null || !IsCodeFoldingEnabled)
+        {
+            return;
+        }
+
+        var folding = FoldingManager.GetNextFolding(TextArea.Caret.Offset);
+        if (folding == null || TextArea.Document.GetLocation(folding.StartOffset).Line !=      TextArea.Document.GetLocation(TextArea.Caret.Offset).Line)
+        {
+            folding = FoldingManager.GetFoldingsContaining(TextArea.Caret.Offset).LastOrDefault();
+        }
+
+        if (folding != null)
+            folding.IsFolded = !folding.IsFolded;
+    }
+
+    public IEnumerable<NewFolding> SaveFoldings()
+    {
+        if (FoldingManager == null || !IsCodeFoldingEnabled)
+        {
+            return [];
+        }
+
+        return FoldingManager?.AllFoldings
+            .Select(folding => new NewFolding
+            {
+                StartOffset = folding.StartOffset,
+                EndOffset = folding.EndOffset,
+                Name = folding.Title,
+                DefaultClosed = folding.IsFolded
+            })
+            .ToList() ?? [];
+    }
+
+    public void RestoreFoldings(IEnumerable<NewFolding> foldings)
+    {
+        if (FoldingManager == null || !IsCodeFoldingEnabled)
+        {
+            return;
+        }
+
+
+        FoldingManager.Clear();
+        FoldingManager.UpdateFoldings(foldings, -1);
+    }
 }

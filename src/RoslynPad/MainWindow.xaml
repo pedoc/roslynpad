@@ -6,7 +6,7 @@
         xmlns:rp="clr-namespace:RoslynPad"
         xmlns:roslyn="clr-namespace:Microsoft.CodeAnalysis;assembly=Microsoft.CodeAnalysis"
         xmlns:dock="https://github.com/Dirkster99/AvalonDock"
-        xmlns:av="http://schemas.codeplex.com/wpfcontrib/xaml/presentation"
+        xmlns:av="https://github.com/aelij/wpfcontrib"
         xmlns:ui="clr-namespace:RoslynPad.UI;assembly=RoslynPad.Common.UI" xmlns:controls="clr-namespace:RoslynPad.Controls"
         mc:Ignorable="d"
         d:DataContext="{d:DesignInstance ui:MainViewModel}"
@@ -18,17 +18,22 @@
         Name="This">
 
     <FrameworkElement.InputBindings>
-        <KeyBinding Gesture="Ctrl+N"
+        <KeyBinding Key="{Binding Converter={StaticResource KeySequenceToGestureConverter}, ConverterParameter={x:Static ui:KeyBindingCommands.NewDocument}}"
+                    Modifiers="{Binding Converter={StaticResource KeySequenceToGestureConverter}, ConverterParameter={x:Static ui:KeyBindingCommands.NewDocument}}"
                     Command="{Binding NewDocumentCommand, Mode=OneTime}"
                     CommandParameter="{x:Static roslyn:SourceCodeKind.Regular}" />
-        <KeyBinding Gesture="Ctrl+Shift+N"
+        <KeyBinding Key="{Binding Converter={StaticResource KeySequenceToGestureConverter}, ConverterParameter={x:Static ui:KeyBindingCommands.NewScript}}"
+                    Modifiers="{Binding Converter={StaticResource KeySequenceToGestureConverter}, ConverterParameter={x:Static ui:KeyBindingCommands.NewScript}}"
                     Command="{Binding NewDocumentCommand, Mode=OneTime}"
                     CommandParameter="{x:Static roslyn:SourceCodeKind.Script}" />
-        <KeyBinding Gesture="Ctrl+O"
+        <KeyBinding Key="{Binding Converter={StaticResource KeySequenceToGestureConverter}, ConverterParameter={x:Static ui:KeyBindingCommands.OpenFile}}"
+                    Modifiers="{Binding Converter={StaticResource KeySequenceToGestureConverter}, ConverterParameter={x:Static ui:KeyBindingCommands.OpenFile}}"
                     Command="{Binding OpenFileCommand, Mode=OneTime}" />
-        <KeyBinding Gesture="Ctrl+W"
+        <KeyBinding Key="{Binding Converter={StaticResource KeySequenceToGestureConverter}, ConverterParameter={x:Static ui:KeyBindingCommands.CloseCurrentFile}}"
+                    Modifiers="{Binding Converter={StaticResource KeySequenceToGestureConverter}, ConverterParameter={x:Static ui:KeyBindingCommands.CloseCurrentFile}}"
                     Command="{Binding CloseCurrentDocumentCommand, Mode=OneTime}" />
-        <KeyBinding Gesture="Ctrl+Shift+O"
+        <KeyBinding Key="{Binding Converter={StaticResource KeySequenceToGestureConverter}, ConverterParameter={x:Static ui:KeyBindingCommands.ToggleOptimization}}"
+                    Modifiers="{Binding Converter={StaticResource KeySequenceToGestureConverter}, ConverterParameter={x:Static ui:KeyBindingCommands.ToggleOptimization}}"
                     Command="{Binding ToggleOptimizationCommand, Mode=OneTime}" />
     </FrameworkElement.InputBindings>
     <FrameworkElement.Resources>
@@ -138,6 +143,7 @@
                                             <AdornerDecorator DataContext="{Binding CurrentOpenDocument}">
                                                 <controls:ILViewer Text="{Binding ILText}"
                                                                    IsVisibleChanged="ILViewer_IsVisibleChanged"
+                                                                   FontFamily="{Binding MainViewModel.Settings.EditorFontFamily}"
                                                                    FontSize="{Binding MainViewModel.EditorFontSize}" />
                                             </AdornerDecorator>
                                         </DockPanel>

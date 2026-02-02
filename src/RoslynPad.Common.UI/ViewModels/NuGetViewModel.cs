@@ -78,10 +78,15 @@ public sealed class NuGetViewModel : NotificationObject, INuGetCompletionProvide
     {
         _initializationException?.Throw();
 
+        if (_sourceRepositoryProvider is null)
+        {
+            return [];
+        }
+
         var filter = new SearchFilter(includePrerelease);
         var packages = new List<PackageData>();
 
-        foreach (var sourceRepository in _sourceRepositoryProvider!.GetRepositories())
+        foreach (var sourceRepository in _sourceRepositoryProvider.GetRepositories())
         {
             IPackageSearchMetadata[]? result;
             try
@@ -125,7 +130,7 @@ public sealed class NuGetViewModel : NotificationObject, INuGetCompletionProvide
         private readonly List<SourceRepository> _repositories;
 
         // There should only be one instance of the source repository for each package source.
-        private static readonly ConcurrentDictionary<PackageSource, SourceRepository> _cachedSources
+        private static readonly ConcurrentDictionary<PackageSource, SourceRepository> s_cachedSources
             = new();
 
         public CommandLineSourceRepositoryProvider(IPackageSourceProvider packageSourceProvider)
@@ -148,12 +153,12 @@ public sealed class NuGetViewModel : NotificationObject, INuGetCompletionProvide
 
         public SourceRepository CreateRepository(PackageSource source)
         {
-            return _cachedSources.GetOrAdd(source, new SourceRepository(source, _resourceProviders));
+            return s_cachedSources.GetOrAdd(source, new SourceRepository(source, _resourceProviders));
         }
 
         public SourceRepository CreateRepository(PackageSource source, FeedType type)
         {
-            return _cachedSources.GetOrAdd(source, new SourceRepository(source, _resourceProviders, type));
+            return s_cachedSources.GetOrAdd(source, new SourceRepository(source, _resourceProviders, type));
         }
 
         public IPackageSourceProvider PackageSourceProvider { get; }

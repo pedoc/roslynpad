@@ -1,5 +1,4 @@
 ﻿using System.ComponentModel;
-using System.Composition;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -16,8 +15,6 @@ namespace RoslynPad;
 [Export(typeof(ISaveDocumentDialog))]
 partial class SaveDocumentDialog : UserControl, ISaveDocumentDialog, INotifyPropertyChanged
 {
-    private const string HostIdentifier = "Main";
-
     private static readonly char[] s_invalidFileChars = Path.GetInvalidFileNameChars();
 
     private bool _showDoNotSave;
@@ -115,12 +112,15 @@ partial class SaveDocumentDialog : UserControl, ISaveDocumentDialog, INotifyProp
 
     public async Task ShowAsync()
     {
-        await DialogHost.Show(this, HostIdentifier).ConfigureAwait(true);
+        await DialogHost.Show(this, MainWindow.DialogHostIdentifier).ConfigureAwait(true);
     }
 
     public void Close()
     {
-        DialogHost.Close(HostIdentifier);
+        if (DialogHost.IsDialogOpen(MainWindow.DialogHostIdentifier))
+        {
+            DialogHost.Close(MainWindow.DialogHostIdentifier);
+        }
     }
 
     private void PerformSave()

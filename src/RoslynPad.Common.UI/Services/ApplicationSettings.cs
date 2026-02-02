@@ -26,15 +26,22 @@ internal class ApplicationSettings : IApplicationSettings
     };
 
     private readonly ITelemetryProvider? _telemetryProvider;
+    private readonly IKeyBindingService _keyBindingService;
     private SerializableValues _values;
     private string? _path;
 
     [ImportingConstructor]
-    public ApplicationSettings([Import(AllowDefault = true)] ITelemetryProvider telemetryProvider)
+    public ApplicationSettings(
+        IKeyBindingService keyBindingService,
+        [Import(AllowDefault = true)] ITelemetryProvider telemetryProvider)
     {
+        _keyBindingService = keyBindingService;
         _telemetryProvider = telemetryProvider;
         _values = new SerializableValues();
         InitializeValues();
+
+        // Initialize static accessor for use in XAML converters
+        KeyBindings.Service = keyBindingService;
     }
 
     private void InitializeValues()
@@ -84,6 +91,7 @@ internal class ApplicationSettings : IApplicationSettings
         if (!File.Exists(path))
         {
             _values.LoadDefaultSettings();
+            _keyBindingService.LoadOverrides(_values);
             return;
         }
 
@@ -98,6 +106,8 @@ internal class ApplicationSettings : IApplicationSettings
             _values.LoadDefaultSettings();
             _telemetryProvider?.ReportError(e);
         }
+
+        _keyBindingService.LoadOverrides(_values);
     }
 
     private void SaveSettings()
@@ -119,12 +129,14 @@ internal class ApplicationSettings : IApplicationSettings
     {
         private const int LiveModeDelayMsDefault = 2000;
         private const int DefaultFontSize = 12;
+        private IList<KeyBinding>? _keyBindings;
         private BuiltInTheme _builtInTheme;
         private bool _sendErrors;
         private string? _latestVersion;
         private string? _windowBounds;
         private string? _dockLayout;
         private string? _windowState;
+        private string _editorFontFamily = GetDefaultPlatformFontFamily();
         private double _editorFontSize = DefaultFontSize;
         private double _outputFontSize = DefaultFontSize;
         private string? _documentPath;
@@ -140,6 +152,7 @@ internal class ApplicationSettings : IApplicationSettings
         private string? _effectiveDocumentPath;
         private string? _customThemePath;
         private ThemeType? _customThemeType;
+        private string[]? _defaultUsings;
 
         public void LoadDefaultSettings()
         {
@@ -148,6 +161,43 @@ internal class ApplicationSettings : IApplicationSettings
             EditorFontSize = DefaultFontSize;
             OutputFontSize = DefaultFontSize;
             LiveModeDelayMs = LiveModeDelayMsDefault;
+            EditorFontFamily = GetDefaultPlatformFontFamily();
+            DefaultUsings =
+            [
+                "System",
+                "System.Threading",
+                "System.Threading.Tasks",
+                "System.Collections",
+                "System.Collections.Generic",
+                "System.Text",
+                "System.Text.RegularExpressions",
+                "System.Linq",
+                "System.IO",
+                "System.Reflection",
+                "RoslynPad.Runtime",
+            ];
+        }
+
+        private static string GetDefaultPlatformFontFamily()
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                return "Cascadia Code,Consolas";
+            }
+            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            {
+                return "Menlo";
+            }
+            else
+            {
+                return "Monospace";
+            }
+        }
+
+        public IList<KeyBinding>? KeyBindings
+        {
+            get => _keyBindings;
+            set => SetProperty(ref _keyBindings, value);
         }
 
         public bool SendErrors
@@ -191,6 +241,12 @@ internal class ApplicationSettings : IApplicationSettings
         {
             get => _editorFontSize;
             set => SetProperty(ref _editorFontSize, value);
+        }
+
+        public string EditorFontFamily
+        {
+            get => _editorFontFamily;
+            set => SetProperty(ref _editorFontFamily, value);
         }
 
         public double OutputFontSize
@@ -269,6 +325,12 @@ internal class ApplicationSettings : IApplicationSettings
         {
             get => _builtInTheme;
             set => SetProperty(ref _builtInTheme, value);
+        }
+
+        public string[]? DefaultUsings
+        {
+            get => _defaultUsings;
+            set => SetProperty(ref _defaultUsings, value);
         }
 
         [JsonIgnore]

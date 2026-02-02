@@ -106,8 +106,10 @@ internal sealed class QuickInfoProvider(IDeferredQuickInfoContentProvider conten
         // Instead, we need to find the head in which we get the best binding, 
         // which in this case is the one with no errors.
 
-        var candidateProjects = new List<ProjectId> { document.Project.Id };
-        var invalidProjects = new List<ProjectId>();
+        var candidateProjects = ImmutableArray.CreateBuilder<ProjectId>();
+        candidateProjects.Add(document.Project.Id);
+
+        var invalidProjects = ImmutableArray.CreateBuilder<ProjectId>();
 
         var candidateResults = new List<Tuple<DocumentId, SemanticModel, IList<ISymbol>>>
         {
@@ -150,7 +152,7 @@ internal sealed class QuickInfoProvider(IDeferredQuickInfoContentProvider conten
             }
         }
 
-        var supportedPlatforms = new SupportedPlatformData(document.Project.Solution, invalidProjects, candidateProjects);
+        var supportedPlatforms = new SupportedPlatformData(document.Project.Solution, invalidProjects.ToImmutable(), candidateProjects.ToImmutable());
         return await CreateContentAsync(document.Project.Solution.Workspace, token, bestBinding.Item2, bestBinding.Item3, supportedPlatforms, cancellationToken).ConfigureAwait(false);
     }
 
@@ -282,7 +284,7 @@ internal sealed class QuickInfoProvider(IDeferredQuickInfoContentProvider conten
 
             // if generating quick info for an attribute, bind to the class instead of the constructor
             if (token.Parent != null &&
-                syntaxFactsService.IsAttributeName(token.Parent) &&
+                syntaxFactsService.IsNameOfAttribute(token.Parent) &&
                 symbol.ContainingType?.IsAttribute() == true)
             {
                 symbol = symbol.ContainingType;
@@ -292,7 +294,7 @@ internal sealed class QuickInfoProvider(IDeferredQuickInfoContentProvider conten
 
             if (documentation != null)
             {
-                return _contentProvider.CreateClassifiableDeferredContent(documentation.ToList());
+                return _contentProvider.CreateClassifiableDeferredContent([.. documentation]);
             }
         }
 
@@ -325,8 +327,8 @@ internal sealed class QuickInfoProvider(IDeferredQuickInfoContentProvider conten
                 return new ValueTuple<SemanticModel, IList<ISymbol>>(
                     semanticModel,
                     symbols.First() is ITypeParameterSymbol typeParameter && typeParameter.TypeParameterKind == TypeParameterKind.Cref
-                        ? SpecializedCollections.EmptyList<ISymbol>()
-                        : symbols.ToList());
+                        ? []
+                        : [.. symbols]);
             }
 
             // Couldn't bind the token to specific symbols.  If it's an operator, see if we can at
@@ -337,12 +339,12 @@ internal sealed class QuickInfoProvider(IDeferredQuickInfoContentProvider conten
                 var typeInfo = semanticModel.GetTypeInfo(token.Parent, cancellationToken);
                 if (IsOk(typeInfo.Type!))
                 {
-                    return new ValueTuple<SemanticModel, IList<ISymbol>>(semanticModel, new List<ISymbol>(1) { typeInfo.Type! });
+                    return new ValueTuple<SemanticModel, IList<ISymbol>>(semanticModel, [typeInfo.Type!]);
                 }
             }
         }
 
-        return ValueTuple.Create(semanticModel, SpecializedCollections.EmptyList<ISymbol>());
+        return ValueTuple.Create(semanticModel, Array.Empty<ISymbol>());
     }
 
     private static bool IsOk(ISymbol symbol)

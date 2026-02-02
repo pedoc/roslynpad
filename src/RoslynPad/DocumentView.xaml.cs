@@ -1,16 +1,8 @@
-﻿using System.Globalization;
-using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Input;
-using System.Windows.Media;
-using Avalon.Windows.Controls;
+﻿using Avalon.Windows.Controls;
 using ICSharpCode.AvalonEdit.Document;
-using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
 using RoslynPad.Build;
 using RoslynPad.Editor;
-using RoslynPad.Themes;
 using RoslynPad.UI;
 
 namespace RoslynPad;
@@ -31,6 +23,11 @@ public partial class DocumentView : IDisposable
         Editor.TextArea.SelectionChanged += EditorSelectionChanged;
 
         DataContextChanged += OnDataContextChanged;
+
+
+        //TODO: Add AvalonEditCommands ToggleAllFolds, ToggleFold
+        //CommandBindings.Add(new CommandBinding(AvalonEditCommands.ToggleAllFolds, (s, e) => ToggleAllFoldings()));
+        //CommandBindings.Add(new CommandBinding(AvalonEditCommands.ToggleFold, (s, e) => ToggleCurrentFolding()));
     }
 
     public OpenDocumentViewModel ViewModel => _viewModel.NotNull();
@@ -68,7 +65,11 @@ public partial class DocumentView : IDisposable
 
         _viewModel.EditorFocus += (o, e) => Editor.Focus();
         _viewModel.EditorChangeLocation += ((int line, int column) value) => ChangePosition(value.line, value.column);
-        _viewModel.DocumentUpdated += (o, e) => Dispatcher.InvokeAsync(() => Editor.RefreshHighlighting());
+        _viewModel.DocumentUpdated += (o, e) => 
+        {
+            Dispatcher.InvokeAsync(() => Editor.RefreshHighlighting());
+            Dispatcher.InvokeAsync(() => Editor.RefreshFoldings());            
+        };
 
         _viewModel.MainViewModel.EditorFontSizeChanged += EditorFontSizeChanged;
         Editor.FontSize = _viewModel.MainViewModel.EditorFontSize;
@@ -140,7 +141,7 @@ public partial class DocumentView : IDisposable
     {
         _ = Dispatcher.InvokeAsync(() =>
         {
-            var text = $"#r \"nuget: {package.Id}, {package.Version}\"{Environment.NewLine}";
+            var text = ViewModel.FormatPackageReference(package.Id, package.Version);
             Editor.Document.Insert(0, text, AnchorMovementType.Default);
         });
     }

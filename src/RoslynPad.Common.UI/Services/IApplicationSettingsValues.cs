@@ -5,6 +5,7 @@ namespace RoslynPad.UI;
 
 public interface IApplicationSettingsValues : INotifyPropertyChanged
 {
+    IList<KeyBinding>? KeyBindings { get; set; }
     bool SendErrors { get; set; }
     bool EnableBraceCompletion { get; set; }
     string? LatestVersion { get; set; }
@@ -12,6 +13,7 @@ public interface IApplicationSettingsValues : INotifyPropertyChanged
     string? DockLayout { get; set; }
     string? WindowState { get; set; }
     double EditorFontSize { get; set; }
+    string EditorFontFamily { get; set; }
     double OutputFontSize { get; set; }
     string? DocumentPath { get; set; }
     bool SearchFileContents { get; set; }
@@ -26,4 +28,5 @@ public interface IApplicationSettingsValues : INotifyPropertyChanged
     string? CustomThemePath { get; }
     ThemeType? CustomThemeType { get; }
     BuiltInTheme BuiltInTheme { get; }
+    string[]? DefaultUsings { get; }
 }

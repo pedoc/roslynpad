@@ -1,7 +1,6 @@
-﻿using System.Windows;
-using RoslynPad.Themes;
+﻿#pragma warning disable CA1010 // Generic interface should also be implemented
 
-#pragma warning disable CA1010 // Generic interface should also be implemented
+using RoslynPad.Themes;
 
 namespace RoslynPad;
 
@@ -51,7 +50,8 @@ public class ThemeDictionary : ThemeDictionaryBase
     public const string TabBorder = "tab.border";
     public const string InputBorder = "input.border";
     public const string TitleBarActiveBackground = "titleBar.activeBackground";
-
+    public const string InputBackground = "input.background";
+    public const string InputForeground = "input.foreground";
     private void Initialize(Theme theme)
     {
         if (theme.Colors is null)

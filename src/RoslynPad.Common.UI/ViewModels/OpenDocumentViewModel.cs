@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using System.Collections.ObjectModel;
 using System.Composition;
 using System.Diagnostics;
@@ -12,6 +11,7 @@ using Microsoft.CodeAnalysis.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NuGet.Packaging;
+using NuGet.Versioning;
 using RoslynPad.Build;
 using RoslynPad.Roslyn.Rename;
 using RoslynPad.Utilities;
@@ -696,7 +696,7 @@ public class OpenDocumentViewModel : NotificationObject, IDisposable
                 AddResult(CompilationErrorResultObject.Create(diagnostic.Severity.ToString(), diagnostic.Id, diagnostic.GetMessage(CultureInfo.InvariantCulture), startLinePosition.Line, startLinePosition.Character));
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             AddResult(new ExceptionResultObject { Value = ex.ToString() });
         }
@@ -802,6 +802,17 @@ public class OpenDocumentViewModel : NotificationObject, IDisposable
     private void OnEditorFocus()
     {
         EditorFocus?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Formats a package reference using the appropriate syntax for the current platform.
+    /// Uses #:package syntax for .NET 10+ SDK when no legacy #r directives exist, or #r "nuget:" otherwise.
+    /// </summary>
+    public string FormatPackageReference(string packageId, NuGetVersion version)
+    {
+        return _executionHost?.UseFileBasedReferences == true
+            ? $"#:package {packageId}@{version}{Environment.NewLine}"
+            : $"#r \"nuget: {packageId}, {version}\"{Environment.NewLine}";
     }
 
     public void OnTextChanged()

@@ -23,21 +23,21 @@ namespace RoslynPad.Editor;
 
 internal sealed class SnippetManager
 {
-    internal readonly ImmutableDictionary<string, CodeSnippet> DefaultSnippets;
+    internal readonly ImmutableDictionary<string, CodeSnippet> _defaultSnippets;
 
     public SnippetManager()
     {
         var snippets = GetGeneralSnippets();
         snippets.AddRange(GetPlatformSnippets());
 
-        DefaultSnippets = snippets.ToImmutableDictionary(x => x.Name);
+        _defaultSnippets = snippets.ToImmutableDictionary(x => x.Name);
     }
 
-    public IEnumerable<CodeSnippet> Snippets => DefaultSnippets.Values;
+    public IEnumerable<CodeSnippet> Snippets => _defaultSnippets.Values;
     
     public CodeSnippet? FindSnippet(string name)
     {
-        DefaultSnippets.TryGetValue(name, out var snippet);
+        _defaultSnippets.TryGetValue(name, out var snippet);
         return snippet;
     }
 
@@ -45,78 +45,85 @@ internal sealed class SnippetManager
     {
         var snippets = new List<CodeSnippet>
         {
-            new CodeSnippet
-            (
+            new            (
                 "for",
                 "for loop",
                 "for (int ${counter=i} = 0; ${counter} < ${end}; ${counter}++)\n{\n\t${Selection}\n}",
                 "for"
             ),
-            new CodeSnippet
-            (
+            new            (
+                "forr",
+                "reverse for loop",
+                "for (int ${counter=i} = ${length} - 1; ${counter} >= 0; ${counter}--)\n{\n\t${Selection}\n}",
+                "for"
+            ),
+            new            (
                 "foreach",
                 "foreach loop",
                 "foreach (${var} ${element} in ${collection})\n{\n\t${Selection}\n}",
                 "foreach"
             ),
-            new CodeSnippet
-            (
+            new            (
                 "if",
                 "if statement",
                 "if (${condition})\n{\n\t${Selection}\n}",
                 "if"
             ),
-            new CodeSnippet
-            (
+            new            (
                 "ifnull",
                 "if-null statement",
                 "if (${condition} == null)\n{\n\t${Selection}\n}",
                 "if"
             ),
-            new CodeSnippet
-            (
+            new            (
                 "ifnotnull",
                 "if-not-null statement",
                 "if (${condition} != null)\n{\n\t${Selection}\n}",
                 "if"
             ),
-            new CodeSnippet
-            (
+            new            (
                 "ifelse",
                 "if-else statement",
                 "if (${condition})\n{\n\t${Selection}\n}\nelse\n{\n\t${Caret}\n}",
                 "if"
             ),
-            new CodeSnippet
-            (
+            new            (
+                "else",
+                "Code snippet for else statement",
+                "else\n{\n\t${Selection} ${Caret}\n}",
+                "if"
+            ),
+            new            (
                 "while",
                 "while loop",
                 "while (${condition})\n{\n\t${Selection}\n}",
                 "while"
             ),
-            new CodeSnippet
-            (
+            new            (
+                "do",
+                "Code snippet for do...while loop",
+                "do\n{\n\t${Selection} ${Caret}\n} while (${expression=true});",
+                "for"
+            ),
+            new            (
                 "prop",
                 "Property",
                 "public ${Type=object} ${Property=Property} { get; set; }${Caret}",
-                "event" // properties can be declared where events can be.
+                "class" // properties can be declared in class/struct/interface
             ),
-            new CodeSnippet
-            (
+            new            (
                 "propg",
                 "Property with private setter",
                 "public ${Type=object} ${Property=Property} { get; private set; }${Caret}",
-                "event"
+                "class"
             ),
-            new CodeSnippet
-            (
+            new            (
                 "propfull",
                 "Property with backing field",
                 "${type} ${toFieldName(name)};\n\npublic ${type=int} ${name=Property}\n{\n\tget { return ${toFieldName(name)}; }\n\tset { ${toFieldName(name)} = value; }\n}${Caret}",
-                "event"
+                "class"
             ),
-            new CodeSnippet
-            (
+            new            (
                 "propdp",
                 "Dependency Property",
                 "public static readonly DependencyProperty ${name}Property =" + Environment.NewLine
@@ -128,50 +135,146 @@ internal sealed class SnippetManager
                        + "\tget { return (${type})GetValue(${name}Property); }" + Environment.NewLine
                        + "\tset { SetValue(${name}Property, value); }"
                        + Environment.NewLine + "}${Caret}",
-                "event"
+                "class"
             ),
-            new CodeSnippet
-            (
+            new            (
                 "switch",
                 "Switch statement",
                 "switch (${condition})\n{\n\t${Caret}\n}",
                 "switch"
             ),
-            new CodeSnippet
-            (
+            new            (
                 "try",
                 "Try-catch statement",
                 "try\n{\n\t${Selection}\n}\ncatch (Exception)\n{\n\t${Caret}\n\tthrow;\n}",
                 "try"
             ),
-            new CodeSnippet
-            (
+            new            (
                 "trycf",
                 "Try-catch-finally statement",
                 "try\n{\n\t${Selection}\n}\ncatch (Exception)\n{\n\t${Caret}\n\tthrow;\n}\nfinally\n{\n\t\n}",
                 "try"
             ),
-            new CodeSnippet
-            (
+            new            (
                 "tryf",
                 "Try-finally statement",
                 "try\n{\n\t${Selection}\n}\nfinally\n{\n\t${Caret}\n}",
                 "try"
             ),
-            new CodeSnippet
-            (
+            new            (
                 "using",
                 "Using statement",
                 "using (${resource=null})\n{\n\t${Selection}\n}",
                 "try"
             ),
-            new CodeSnippet
-            (
+            new            (
                 "cw",
                 "Console.WriteLine",
                 "Console.WriteLine(${Selection})",
                 "if"
-            )
+            ),
+            new            (
+                "namespace",
+                "Namespace declaration",
+                "namespace ${Namespace}\n{\n\t${Caret}\n}",
+                "namespace"
+            ),
+            new            (
+                "class",
+                "Class declaration",
+                "public class ${ClassName}\n{\n\t${Caret}\n}",
+                "class"
+            ),
+            new            (
+                "interface",
+                "Interface declaration",
+                "public interface ${InterfaceName}\n{\n\t${Caret}\n}",
+                "interface"
+            ),
+            new            (
+                "struct",
+                "Struct declaration",
+                "public struct ${StructName}\n{\n\t${Caret}\n}",
+                "struct"
+            ),
+            new            (
+                "enum",
+                "Enum declaration",
+                "public enum ${EnumName}\n{\n\t${Caret}\n}",
+                "enum"
+            ),
+            new            (
+                "method",
+                "Method declaration",
+                "public ${ReturnType=void} ${MethodName}()\n{\n\t${Caret}\n}",
+                "method"
+            ),
+            new             (
+                "sim",
+                "Code snippet for int Main()",
+                "static int Main(string[] args)\n{\n\t${Caret}\n\treturn 0;\n}",
+                "class"
+            ),
+            new             (
+                "svm",
+                "Code snippet for 'void Main' method",
+                "static void Main(string[] args)\n{\n\t${Caret}\n}",
+                "class"
+            ),
+            new             (
+                "unchecked",
+                "Code snippet for unchecked block",
+                "unchecked\n{\n\t${Selection} ${Caret}\n}",
+                "checked"
+            ),
+            new             (
+                "checked",
+                "Code snippet for checked block",
+                "checked\n{\n\t${Selection} ${Caret}\n}",
+                "checked"
+            ),
+            new             (
+                "unsafe",
+                "Code snippet for unsafe statement",
+                "unsafe\n{\n\t${Selection} ${Caret}\n}",
+                "class"
+            ),
+            new             (
+                "lock",
+                "Code snippet for lock statement",
+                "lock (${expression=this})\n{\n\t${Selection} ${Caret}\n}",
+                "class"
+            ),
+            new             (
+                "ctor",
+                "Code snippet for constructor",
+                "public ${ClassName}()\n{\n\t${Caret}\n}",
+                "class"
+            ),
+            new            (
+                "~",
+                "Code snippet for destructor",
+                "~${ClassName}()\n{\n\t${Caret}\n}",
+                "class"
+            ),
+            new             (
+                "#if",
+                "Code snippet for #if",
+                "#if ${expression=true}\n\t${Selection} ${Caret} \n#endif",
+                "class"
+            ),
+            new             (
+                "#region",
+                "Code snippet for #region",
+                "#region ${name=MyRegion}\n\t${Selection} ${Caret}\n#endregion",
+                "class"
+            ),
+            new             (
+                "indexer",
+                "Code snippet for indexer",
+                "${access=public} ${type=object} this[${indextype=int} index]\n{\n\tget {${Caret} /* return the specified index here */ }\n\tset { /* set the specified index to value here */ }\n}",
+                "class"
+            ),
         };
         return snippets;
     }

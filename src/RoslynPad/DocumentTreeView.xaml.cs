@@ -1,9 +1,6 @@
-﻿using System.Collections;
+﻿#pragma warning disable CS8618
+
 using System.Diagnostics;
-using System.Globalization;
-using System.Windows;
-using System.Windows.Data;
-using System.Windows.Input;
 using RoslynPad.UI;
 
 namespace RoslynPad;
@@ -12,9 +9,7 @@ public partial class DocumentTreeView
 {
     private MainViewModel _viewModel;
 
-#pragma warning disable CS8618 // Non-nullable field is uninitialized.
     public DocumentTreeView()
-#pragma warning restore CS8618 // Non-nullable field is uninitialized.
     {
         InitializeComponent();
 
@@ -87,7 +82,7 @@ internal class FilterCollectionViewConverter : IValueConverter
 
     public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
-        if (value is IList list)
+        if (value is System.Collections.IList list)
         {
             var collectionView = new ListCollectionView(list)
             {

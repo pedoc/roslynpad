@@ -1,5 +1,6 @@
 param (
   [string] $RootPath,
+  [string] $PackageName,
   [string] $PatchVersion = '0'
 )
 
@@ -15,9 +16,10 @@ $toolsPath = "${env:ProgramFiles(x86)}\Windows Kits\10\bin\"
 $toolsPath += "\$(Get-LatestVersionPath $toolsPath)\x64"
 $env:Path += ";$toolsPath"
 
+$packageFile = "RoslynPad-$PackageName.appx"
 $mapping = 'RoslynPad.mapping'
 Remove-Item $mapping -ErrorAction Ignore
-Remove-Item RoslynPad.appx -ErrorAction Ignore
+Remove-Item $packageFile -ErrorAction Ignore
 Remove-Item *.pri
 
 Write-Host 'Updating manifest...'
@@ -26,6 +28,12 @@ $appManifestPath = "$PSScriptRoot\resources\windows\PackageRoot\AppxManifest.xml
 $appManifest = [xml] (Get-Content $appManifestPath)
 $appManifest.Package.Identity.Version = (Get-RoslynPadVersion $PatchVersion) + '.0'
 $appManifest.Save($appManifestPath)
+
+if ($PackageName -like '*-arm64') {
+    $appManifestPath = Join-Path (New-TemporaryDirectory) 'AppxManifest.xml'
+    $appManifest.Package.Identity.ProcessorArchitecture = 'arm64'
+    $appManifest.Save($appManifestPath)
+}
 
 $files = Get-PackageFiles $RootPath
 
@@ -55,7 +63,7 @@ foreach ($file in Get-ChildItem *.pri) {
 
 Write-Host 'Creating APPX...'
 
-MakeAppx.exe pack /f $mapping /l /p RoslynPad.appx
+MakeAppx.exe pack /f $mapping /l /p $packageFile
 
 Write-Host 'Signing package...'
 
@@ -70,4 +78,4 @@ if (!(Test-Path .\RoslynPad.pfx)) {
     -Password (ConvertTo-SecureString -String 'a' -Force -AsPlainText)
 }
 
-signtool.exe sign -f RoslynPad.pfx -p 'a' -fd SHA256 -v RoslynPad.appx
+signtool.exe sign -f RoslynPad.pfx -p 'a' -fd SHA256 -v $packageFile

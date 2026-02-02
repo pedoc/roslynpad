@@ -1,10 +1,10 @@
-﻿using System.Composition;
+﻿using System.Collections.Immutable;
+using System.Composition;
 using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CodeGeneration;
 using Microsoft.CodeAnalysis.ExtractInterface;
 using Microsoft.CodeAnalysis.Host.Mef;
 using Microsoft.CodeAnalysis.LanguageService;
-using Microsoft.CodeAnalysis.Notification;
+using Microsoft.CodeAnalysis.Shared.Extensions;
 
 namespace RoslynPad.Roslyn.LanguageServices.ExtractInterface;
 
@@ -14,27 +14,16 @@ internal sealed class ExtractInterfaceOptionsService(ExportFactory<IExtractInter
 {
     private readonly ExportFactory<IExtractInterfaceDialog> _dialogFactory = dialogFactory;
 
-    public Task<ExtractInterfaceOptionsResult> GetExtractInterfaceOptionsAsync(
-        ISyntaxFactsService syntaxFactsService,
-        INotificationService notificationService,
-        List<ISymbol> extractableMembers,
-        string defaultInterfaceName,
-        List<string> conflictingTypeNames,
-        string defaultNamespace,
-        string generatedNameTypeParameterSuffix,
-        string languageName,
-        CleanCodeGenerationOptionsProvider fallbackOptions,
-        CancellationToken cancellationToken)
+    public ExtractInterfaceOptionsResult GetExtractInterfaceOptions(Document document, ImmutableArray<ISymbol> extractableMembers, string defaultInterfaceName, ImmutableArray<string> conflictingTypeNames, string defaultNamespace, string generatedNameTypeParameterSuffix)
     {
         var viewModel = new ExtractInterfaceDialogViewModel(
-            syntaxFactsService,
+            document.GetRequiredLanguageService<ISyntaxFactsService>(),
             defaultInterfaceName,
             extractableMembers,
             conflictingTypeNames,
             defaultNamespace,
             generatedNameTypeParameterSuffix,
-            languageName,
-            languageName == LanguageNames.CSharp ? ".cs" : ".vb");
+            document.Project.Language);
 
         var dialog = _dialogFactory.CreateExport().Value;
         dialog.ViewModel = viewModel;
@@ -44,10 +33,9 @@ internal sealed class ExtractInterfaceOptionsService(ExportFactory<IExtractInter
                 includedMembers: viewModel.MemberContainers.Where(c => c.IsChecked).Select(c => c.MemberSymbol).AsImmutable(),
                 interfaceName: viewModel.InterfaceName.Trim(),
                 fileName: viewModel.FileName.Trim(),
-                location: GetLocation(viewModel.Destination),
-                fallbackOptions)
+                location: GetLocation(viewModel.Destination))
             : ExtractInterfaceOptionsResult.Cancelled;
-        return Task.FromResult(options);
+        return options;
     }
 
     private static ExtractInterfaceOptionsResult.ExtractLocation GetLocation(InterfaceDestination destination) => destination switch

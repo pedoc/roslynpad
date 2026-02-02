@@ -1,8 +1,4 @@
-﻿using System.Globalization;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Media;
-using RoslynPad.UI;
+﻿using RoslynPad.UI;
 
 namespace RoslynPad.Converters;
 
@@ -12,11 +8,11 @@ public class ControlCharacterInlinesConverter : IValueConverter
 
     public Brush BackgroundBrush { get; set; } = Brushes.LightGray;
 
-    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+    public object? Convert(object value, Type targetType, object parameter, CultureInfo culture)
     {
         if (value == null)
         {
-            return Array.Empty<Inline>();
+            return null;
         }
 
         return Get((string)value);
@@ -36,7 +32,7 @@ public class ControlCharacterInlinesConverter : IValueConverter
                 yield return new Run(" ") { FontSize = 5 };
                 lastIndex = index + 1;
             }
-            
+
             if (lastIndex < s.Length)
             {
                 yield return new Run(s[lastIndex..]);
