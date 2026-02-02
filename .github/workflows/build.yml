@@ -31,7 +31,7 @@ jobs:
         path: |
           **/*.binlog
     - name: Publish application
-      run: dotnet publish -c Release -o ./publish_output --no-restore
+      run: dotnet publish -c Release -o ./publish_output --no-restore -f net8.0
     - name: Upload build artifact (publish output)
       uses: actions/upload-artifact@v4
       with:
