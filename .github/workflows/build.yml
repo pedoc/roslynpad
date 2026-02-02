@@ -30,9 +30,9 @@ jobs:
         name: logs
         path: |
           **/*.binlog
-    - name: Publish application
-      run: dotnet publish -c Release -o ./publish_output --no-restore -f net8.0-windows
-    - name: Upload build artifact (publish output)
+    - name: Publish RoslynPad application
+      run: dotnet publish src/RoslynPad/RoslynPad.csproj -c Release -o ./publish_output --no-restore
+    - name: Upload build artifact (RoslynPad)
       uses: actions/upload-artifact@v4
       with:
         name: app-publish
